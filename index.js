@@ -2,7 +2,7 @@ const { NodeCec, CEC } = require('node-cec');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
-const { spawn, execFileSync } = require('child_process');
+const { spawn } = require('child_process');
 const { createCecMouseMapper } = require('./cec-mouse-mapper');
 const { createCecMediaMapper } = require('./cec-media-mapper');
 const { createCecKeyboardMapper } = require('./cec-keyboard-mapper');
@@ -15,7 +15,6 @@ const cecDebugLevel = process.env.CEC_DEBUG_LEVEL || '8';
 const cecDeviceType = process.env.CEC_DEVICE_TYPE || 'p';
 const monitorMode = !/^(0|false|no)$/i.test(process.env.CEC_MONITOR_MODE || '0');
 const cecHdmiPort = process.env.CEC_HDMI_PORT || '2';
-const selectHoldMs = Number(process.env.CEC_SELECT_HOLD_MS || process.env.CEC_EXIT_HOLD_MS || '500');
 const autoClaimActiveSource = /^(1|true|yes)$/i.test(
   process.env.CEC_AUTO_CLAIM_ACTIVE_SOURCE || '0'
 );
@@ -28,10 +27,6 @@ const cecOsdName =
     .slice(0, 14) || 'cec-listener';
 const modeStateFile = process.env.CEC_MODE_STATE_FILE || '/tmp/cec-listener-mode.txt';
 const menuBarScriptPath = path.join(__dirname, 'menubar', 'cec-mode-menubar.swift');
-const mouseSvgPath = path.join(__dirname, 'assets', 'icons', 'remote-mouse.svg');
-const keyboardSvgPath = path.join(__dirname, 'assets', 'icons', 'remote-keyboard.svg');
-const mouseIconPngPath = path.join('/tmp', 'cec-listener-remote-mouse.png');
-const keyboardIconPngPath = path.join('/tmp', 'cec-listener-remote-keyboard.png');
 
 let cec = null;
 let shuttingDown = false;
@@ -45,9 +40,6 @@ let currentLogicalAddress = 0x08;
 let isLocalInputActive = true;
 let hasSeenLocalInputPath = false;
 let lastPressedKeyForRelease = '';
-let inputMode = 'mouse';
-let selectHoldTimer = null;
-let selectHoldTriggered = false;
 
 function parseMouseSteps(stepsValue) {
   const defaultSteps = [10, 80];
@@ -93,40 +85,11 @@ function formatPhysicalAddress(path) {
 
 function writeModeStateFile() {
   try {
-    fs.writeFileSync(
-      modeStateFile,
-      `${JSON.stringify({ mode: inputMode, step: mouseStepPx })}\n`,
-      'utf8'
-    );
+    fs.writeFileSync(modeStateFile, `${JSON.stringify({ step: mouseStepPx })}\n`, 'utf8');
   } catch (err) {
     if (verbose) {
       console.error('Failed writing mode state file:', err.message);
     }
-  }
-}
-
-function ensureMenuBarIconPng(svgPath, pngPath) {
-  if (!fs.existsSync(svgPath)) {
-    return false;
-  }
-
-  try {
-    const renderedBase = path.basename(svgPath);
-    const renderedPath = path.join('/tmp', `${renderedBase}.png`);
-    execFileSync('qlmanage', ['-t', '-s', '44', '-o', '/tmp', svgPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf8',
-    });
-    if (!fs.existsSync(renderedPath)) {
-      return false;
-    }
-    fs.copyFileSync(renderedPath, pngPath);
-    return true;
-  } catch (err) {
-    if (verbose) {
-      console.error('Failed rendering menu bar icon:', err.message);
-    }
-    return false;
   }
 }
 
@@ -135,16 +98,12 @@ function startModeMenuBar() {
     return;
   }
 
-  ensureMenuBarIconPng(mouseSvgPath, mouseIconPngPath);
-  ensureMenuBarIconPng(keyboardSvgPath, keyboardIconPngPath);
   writeModeStateFile();
 
   try {
-    menuBarProcess = spawn(
-      'swift',
-      [menuBarScriptPath, modeStateFile, mouseIconPngPath, keyboardIconPngPath],
-      { stdio: ['ignore', 'ignore', 'ignore'] }
-    );
+    menuBarProcess = spawn('swift', [menuBarScriptPath, modeStateFile], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
     menuBarProcess.on('exit', () => {
       menuBarProcess = null;
     });
@@ -168,20 +127,6 @@ function stopModeMenuBar() {
     }
   }
   menuBarProcess = null;
-}
-
-function setInputMode(mode, reason) {
-  const normalized = mode === 'keyboard' ? 'keyboard' : 'mouse';
-  if (inputMode === normalized) {
-    return;
-  }
-  inputMode = normalized;
-  writeModeStateFile();
-  console.log(`📺 mode -> ${inputMode} (${reason})`);
-}
-
-function toggleInputMode(reason) {
-  setInputMode(inputMode === 'mouse' ? 'keyboard' : 'mouse', reason);
 }
 
 function isDirectionalKey(keyName) {
@@ -239,37 +184,28 @@ function onRemoteKeyPressed(keyName, context) {
 
   console.log('📺 key:', keyName);
   if (keyName === 'select') {
-    if (!selectHoldTimer) {
-      selectHoldTriggered = false;
-      selectHoldTimer = setTimeout(() => {
-        selectHoldTriggered = true;
-        toggleInputMode(`select hold ${selectHoldMs}ms`);
-      }, selectHoldMs);
-    }
     return;
   }
 
   if (isDirectionalKey(keyName)) {
-    if (inputMode === 'keyboard') {
-      const ok = keyboardMapper.sendArrow(keyName);
-      if (verbose) {
-        console.log(`CEC keyboard arrow ${keyName}: ${ok ? 'ok' : 'failed'}`);
-      }
-    } else {
-      mouseMapper.handleKeyPressed(keyName);
-    }
+    mouseMapper.handleKeyPressed(keyName);
     return;
   }
 
   if (keyName === 'enter') {
-    if (inputMode === 'keyboard') {
-      const ok = keyboardMapper.sendEnter();
-      if (verbose) {
-        console.log(`CEC keyboard Enter: ${ok ? 'ok' : 'failed'}`);
-      }
-    } else {
-      mouseMapper.handleKeyPressed(keyName);
-    }
+    mouseMapper.handleKeyPressed(keyName);
+    return;
+  }
+
+  if (keyName === 'channel_up') {
+    const ok = keyboardMapper.sendArrow('up');
+    console.log(`📺 channel_up -> ArrowUp (${ok ? 'ok' : 'failed'})`);
+    return;
+  }
+
+  if (keyName === 'channel_down') {
+    const ok = keyboardMapper.sendArrow('down');
+    console.log(`📺 channel_down -> ArrowDown (${ok ? 'ok' : 'failed'})`);
     return;
   }
 
@@ -288,20 +224,8 @@ function onRemoteKeyPressed(keyName, context) {
 function onRemoteKeyReleased(context) {
   const releasedKey = (context.keyName || '').toLowerCase();
   if (releasedKey === 'select') {
-    if (selectHoldTimer) {
-      clearTimeout(selectHoldTimer);
-      selectHoldTimer = null;
-    }
-    if (!selectHoldTriggered) {
-      if (inputMode === 'keyboard') {
-        const ok = keyboardMapper.sendEnter();
-        console.log(`📺 select tap -> Enter (${ok ? 'ok' : 'failed'})`);
-      } else {
-        mouseMapper.clickCurrent();
-        console.log('📺 select tap -> click');
-      }
-    }
-    selectHoldTriggered = false;
+    mouseMapper.clickCurrent();
+    console.log('📺 select tap -> click');
     return;
   }
 
@@ -553,10 +477,6 @@ function shutdown(signal, options = {}) {
   if (retryTimer) {
     clearTimeout(retryTimer);
     retryTimer = null;
-  }
-  if (selectHoldTimer) {
-    clearTimeout(selectHoldTimer);
-    selectHoldTimer = null;
   }
   stopModeMenuBar();
 
