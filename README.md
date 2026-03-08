@@ -5,13 +5,13 @@ Small Node.js service for listening to HDMI-CEC remote events on macOS and mappi
 ## Requirements
 
 - macOS machine connected via HDMI
-- USB-CEC adapter (for example Pulse-Eight)
-- `libcec` (`cec-client` in PATH)
+- Installed Pulse-Eight USB-CEC adapter
 - Node.js
 
 ## Install
 
 ```bash
+brew install libcec
 npm install
 ```
 
