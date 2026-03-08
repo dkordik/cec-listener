@@ -186,7 +186,7 @@ function onRemoteKeyPressed(keyName, context) {
   lastPressedKeyAt = now;
 
   console.log('📺 key:', keyName);
-  if (keyName === 'select') {
+  if (keyName === 'select' || keyName === 'enter') {
     if (!selectHoldTimer) {
       selectHoldTriggered = false;
       selectHoldTimer = setTimeout(() => {
@@ -201,11 +201,6 @@ function onRemoteKeyPressed(keyName, context) {
   }
 
   if (isDirectionalKey(keyName)) {
-    mouseMapper.handleKeyPressed(keyName);
-    return;
-  }
-
-  if (keyName === 'enter') {
     mouseMapper.handleKeyPressed(keyName);
     return;
   }
@@ -236,14 +231,14 @@ function onRemoteKeyPressed(keyName, context) {
 
 function onRemoteKeyReleased(context) {
   const releasedKey = (context.keyName || '').toLowerCase();
-  if (releasedKey === 'select') {
+  if (releasedKey === 'select' || releasedKey === 'enter') {
     if (selectHoldTimer) {
       clearTimeout(selectHoldTimer);
       selectHoldTimer = null;
     }
     if (!selectHoldTriggered) {
       mouseMapper.clickCurrent();
-      console.log('📺 select tap -> click');
+      console.log(`📺 ${releasedKey} tap -> click`);
     }
     selectHoldTriggered = false;
     return;

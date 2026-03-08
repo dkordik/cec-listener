@@ -37,17 +37,16 @@ npm install
 
 ### Remote -> Mouse
 
-- `select` tap -> mouse click
-- `select` hold (500ms) -> toggle mouse step size (`10 <-> 80`)
-- `enter` -> mouse click
+- `select`/`enter` tap -> mouse click
+- `select`/`enter` hold (500ms) -> toggle mouse step size (`10 <-> 80`)
 - `left`, `right`, `up`, `down` -> mouse move
 
 ### Remote -> Keyboard
 
-- `channel_up` -> keyboard Up Arrow
-- `channel_down` -> keyboard Down Arrow
-- `exit` hold (500ms) -> send Escape key
-- `electronic_program_guide` -> press Enter key
+- `channel_up` -> Up arrow
+- `channel_down` -> Down arrow
+- `exit` hold (500ms) -> Escape key
+- `electronic_program_guide` -> Enter key
 
 ### Remote -> Media
 
