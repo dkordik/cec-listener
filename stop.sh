@@ -10,8 +10,16 @@ stop_pid() {
     return 0
   fi
 
-  kill -TERM "$pid" 2>/dev/null || true
+  kill -INT "$pid" 2>/dev/null || true
   for _ in {1..30}; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in {1..20}; do
     if ! kill -0 "$pid" 2>/dev/null; then
       return 0
     fi
@@ -40,5 +48,7 @@ fi
 # Fallback cleanup in case old/manual runs exist.
 pkill -f "node index.js" 2>/dev/null || true
 pkill -f "cec-client -m -d 8 -b r -o cec-listener" 2>/dev/null || true
+pkill -INT -f "bash ./start.sh" 2>/dev/null || true
+pkill -f "cec-mode-menubar.swift" 2>/dev/null || true
 
 echo "cec-listener stopped"

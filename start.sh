@@ -23,8 +23,19 @@ restart_requested=0
 echo "$$" > "$supervisor_pid_file"
 
 cleanup() {
-  rm -f "$pid_file"
-  rm -f "$supervisor_pid_file"
+  if [[ -f "$pid_file" ]]; then
+    current_pid_file_value="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ "$current_pid_file_value" == "$child_pid" || -z "$current_pid_file_value" ]]; then
+      rm -f "$pid_file"
+    fi
+  fi
+
+  if [[ -f "$supervisor_pid_file" ]]; then
+    current_supervisor_pid_file_value="$(cat "$supervisor_pid_file" 2>/dev/null || true)"
+    if [[ "$current_supervisor_pid_file_value" == "$$" || -z "$current_supervisor_pid_file_value" ]]; then
+      rm -f "$supervisor_pid_file"
+    fi
+  fi
 }
 
 forward_and_wait() {
@@ -45,7 +56,7 @@ forward_and_wait() {
   fi
 }
 
-trap 'forward_and_wait TERM; cleanup; exit 0' TERM
+trap 'restart_requested=1; forward_and_wait TERM' TERM
 trap 'forward_and_wait INT; cleanup; exit 0' INT
 trap 'forward_and_wait HUP; cleanup; exit 0' HUP
 trap 'restart_requested=1; forward_and_wait TERM' USR1

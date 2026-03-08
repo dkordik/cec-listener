@@ -1,5 +1,8 @@
 const { NodeCec, CEC } = require('node-cec');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const { spawn, execFileSync } = require('child_process');
 const { createCecMouseMapper } = require('./cec-mouse-mapper');
 const { createCecMediaMapper } = require('./cec-media-mapper');
 const { createCecKeyboardMapper } = require('./cec-keyboard-mapper');
@@ -12,6 +15,7 @@ const cecDebugLevel = process.env.CEC_DEBUG_LEVEL || '8';
 const cecDeviceType = process.env.CEC_DEVICE_TYPE || 'p';
 const monitorMode = !/^(0|false|no)$/i.test(process.env.CEC_MONITOR_MODE || '0');
 const cecHdmiPort = process.env.CEC_HDMI_PORT || '2';
+const selectHoldMs = Number(process.env.CEC_SELECT_HOLD_MS || process.env.CEC_EXIT_HOLD_MS || '500');
 const autoClaimActiveSource = /^(1|true|yes)$/i.test(
   process.env.CEC_AUTO_CLAIM_ACTIVE_SOURCE || '0'
 );
@@ -22,10 +26,17 @@ const cecOsdName =
   (process.env.CEC_OSD_NAME || defaultOsdName)
     .replace(/[^a-zA-Z0-9 _().+-]/g, '')
     .slice(0, 14) || 'cec-listener';
+const modeStateFile = process.env.CEC_MODE_STATE_FILE || '/tmp/cec-listener-mode.txt';
+const menuBarScriptPath = path.join(__dirname, 'menubar', 'cec-mode-menubar.swift');
+const mouseSvgPath = path.join(__dirname, 'assets', 'icons', 'remote-mouse.svg');
+const keyboardSvgPath = path.join(__dirname, 'assets', 'icons', 'remote-keyboard.svg');
+const mouseIconPngPath = path.join('/tmp', 'cec-listener-remote-mouse.png');
+const keyboardIconPngPath = path.join('/tmp', 'cec-listener-remote-keyboard.png');
 
 let cec = null;
 let shuttingDown = false;
 let retryTimer = null;
+let menuBarProcess = null;
 let lastRawKeyEvent = '';
 let lastRawKeyEventAt = 0;
 let lastPressedKeyName = '';
@@ -34,6 +45,28 @@ let currentLogicalAddress = 0x08;
 let isLocalInputActive = true;
 let hasSeenLocalInputPath = false;
 let lastPressedKeyForRelease = '';
+let inputMode = 'mouse';
+let selectHoldTimer = null;
+let selectHoldTriggered = false;
+
+function parseMouseSteps(stepsValue) {
+  const defaultSteps = [10, 80];
+  const parsed = String(stepsValue || defaultSteps.join(','))
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  return parsed.length > 0 ? parsed : defaultSteps;
+}
+
+const configuredMouseSteps = parseMouseSteps(process.env.CEC_MOUSE_STEPS || '10,80');
+const configuredMouseInitialMode = Number(process.env.CEC_MOUSE_STEP_MODE || '0');
+const normalizedMouseStepMode =
+  Number.isInteger(configuredMouseInitialMode) &&
+  configuredMouseInitialMode >= 0 &&
+  configuredMouseInitialMode < configuredMouseSteps.length
+    ? configuredMouseInitialMode
+    : Math.min(1, configuredMouseSteps.length - 1);
+let mouseStepPx = configuredMouseSteps[normalizedMouseStepMode];
 
 const userControlCodeByValue = Object.entries(CEC.UserControlCode).reduce(
   (acc, [name, code]) => {
@@ -57,6 +90,104 @@ function formatPhysicalAddress(path) {
   const d = path & 0x0f;
   return `${a}.${b}.${c}.${d}`;
 }
+
+function writeModeStateFile() {
+  try {
+    fs.writeFileSync(
+      modeStateFile,
+      `${JSON.stringify({ mode: inputMode, step: mouseStepPx })}\n`,
+      'utf8'
+    );
+  } catch (err) {
+    if (verbose) {
+      console.error('Failed writing mode state file:', err.message);
+    }
+  }
+}
+
+function ensureMenuBarIconPng(svgPath, pngPath) {
+  if (!fs.existsSync(svgPath)) {
+    return false;
+  }
+
+  try {
+    const renderedBase = path.basename(svgPath);
+    const renderedPath = path.join('/tmp', `${renderedBase}.png`);
+    execFileSync('qlmanage', ['-t', '-s', '44', '-o', '/tmp', svgPath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    });
+    if (!fs.existsSync(renderedPath)) {
+      return false;
+    }
+    fs.copyFileSync(renderedPath, pngPath);
+    return true;
+  } catch (err) {
+    if (verbose) {
+      console.error('Failed rendering menu bar icon:', err.message);
+    }
+    return false;
+  }
+}
+
+function startModeMenuBar() {
+  if (menuBarProcess || !fs.existsSync(menuBarScriptPath)) {
+    return;
+  }
+
+  ensureMenuBarIconPng(mouseSvgPath, mouseIconPngPath);
+  ensureMenuBarIconPng(keyboardSvgPath, keyboardIconPngPath);
+  writeModeStateFile();
+
+  try {
+    menuBarProcess = spawn(
+      'swift',
+      [menuBarScriptPath, modeStateFile, mouseIconPngPath, keyboardIconPngPath],
+      { stdio: ['ignore', 'ignore', 'ignore'] }
+    );
+    menuBarProcess.on('exit', () => {
+      menuBarProcess = null;
+    });
+  } catch (err) {
+    menuBarProcess = null;
+    if (verbose) {
+      console.error('Failed starting mode menu bar:', err.message);
+    }
+  }
+}
+
+function stopModeMenuBar() {
+  if (!menuBarProcess) {
+    return;
+  }
+  try {
+    menuBarProcess.kill('SIGTERM');
+  } catch (err) {
+    if (verbose) {
+      console.error('Failed stopping mode menu bar:', err.message);
+    }
+  }
+  menuBarProcess = null;
+}
+
+function setInputMode(mode, reason) {
+  const normalized = mode === 'keyboard' ? 'keyboard' : 'mouse';
+  if (inputMode === normalized) {
+    return;
+  }
+  inputMode = normalized;
+  writeModeStateFile();
+  console.log(`📺 mode -> ${inputMode} (${reason})`);
+}
+
+function toggleInputMode(reason) {
+  setInputMode(inputMode === 'mouse' ? 'keyboard' : 'mouse', reason);
+}
+
+function isDirectionalKey(keyName) {
+  const normalized = (keyName || '').toLowerCase();
+  return normalized === 'up' || normalized === 'down' || normalized === 'left' || normalized === 'right';
+}
 const keyboardMapper = createCecKeyboardMapper({
   enabled: process.env.CEC_KEYBOARD_ENABLED || '1',
   verbose: process.env.CEC_KEYBOARD_VERBOSE || (verbose ? '1' : '0'),
@@ -72,6 +203,8 @@ const mouseMapper = createCecMouseMapper({
     console.log(`📺 exit hold started (${holdMs}ms threshold)`);
   },
   onExitTap: (newStep) => {
+    mouseStepPx = newStep;
+    writeModeStateFile();
     console.log(`📺 exit tap -> mouse step ${newStep}px`);
   },
   onExitHold: () => {
@@ -105,6 +238,45 @@ function onRemoteKeyPressed(keyName, context) {
   lastPressedKeyAt = now;
 
   console.log('📺 key:', keyName);
+  if (keyName === 'select') {
+    if (!selectHoldTimer) {
+      selectHoldTriggered = false;
+      selectHoldTimer = setTimeout(() => {
+        selectHoldTriggered = true;
+        toggleInputMode(`select hold ${selectHoldMs}ms`);
+      }, selectHoldMs);
+    }
+    return;
+  }
+
+  if (isDirectionalKey(keyName)) {
+    if (inputMode === 'keyboard') {
+      const ok = keyboardMapper.sendArrow(keyName);
+      if (verbose) {
+        console.log(`CEC keyboard arrow ${keyName}: ${ok ? 'ok' : 'failed'}`);
+      }
+    } else {
+      mouseMapper.handleKeyPressed(keyName);
+    }
+    return;
+  }
+
+  if (keyName === 'enter') {
+    if (inputMode === 'keyboard') {
+      const ok = keyboardMapper.sendEnter();
+      if (verbose) {
+        console.log(`CEC keyboard Enter: ${ok ? 'ok' : 'failed'}`);
+      }
+    } else {
+      mouseMapper.handleKeyPressed(keyName);
+    }
+    return;
+  }
+
+  if (keyName === 'electronic_program_guide') {
+    const ok = keyboardMapper.sendEnter();
+    console.log(`📺 electronic_program_guide -> Enter (${ok ? 'ok' : 'failed'})`);
+  }
   mouseMapper.handleKeyPressed(keyName);
   mediaMapper.handleKey(keyName);
 
@@ -114,7 +286,26 @@ function onRemoteKeyPressed(keyName, context) {
 }
 
 function onRemoteKeyReleased(context) {
-  mouseMapper.handleKeyReleased(context.keyName);
+  const releasedKey = (context.keyName || '').toLowerCase();
+  if (releasedKey === 'select') {
+    if (selectHoldTimer) {
+      clearTimeout(selectHoldTimer);
+      selectHoldTimer = null;
+    }
+    if (!selectHoldTriggered) {
+      if (inputMode === 'keyboard') {
+        const ok = keyboardMapper.sendEnter();
+        console.log(`📺 select tap -> Enter (${ok ? 'ok' : 'failed'})`);
+      } else {
+        mouseMapper.clickCurrent();
+        console.log('📺 select tap -> click');
+      }
+    }
+    selectHoldTriggered = false;
+    return;
+  }
+
+  mouseMapper.handleKeyReleased(releasedKey);
   if (verbose) {
     console.log('Remote key released', context);
   }
@@ -363,6 +554,11 @@ function shutdown(signal, options = {}) {
     clearTimeout(retryTimer);
     retryTimer = null;
   }
+  if (selectHoldTimer) {
+    clearTimeout(selectHoldTimer);
+    selectHoldTimer = null;
+  }
+  stopModeMenuBar();
 
   console.log(`\nShutting down CEC listener (${signal})...`);
 
@@ -406,4 +602,6 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGHUP', () => shutdown('SIGHUP'));
 process.on('SIGUSR1', () => shutdown('SIGUSR1', { exitCode: 75 }));
 
+writeModeStateFile();
+startModeMenuBar();
 startCec();

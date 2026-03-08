@@ -36,20 +36,45 @@ function createCecKeyboardMapper(options = {}) {
     }
   }
 
-  function sendEscape() {
+  function sendKeyCode(keyCode, label) {
     const ok = runScript([
       'tell application "System Events"',
-      '  key code 53',
+      `  key code ${keyCode}`,
       'end tell',
     ]);
     if (verbose) {
-      console.log(`CEC keyboard mapper sent Escape: ${ok ? 'ok' : 'failed'}`);
+      console.log(`CEC keyboard mapper sent ${label}: ${ok ? 'ok' : 'failed'}`);
     }
     return ok;
   }
 
+  function sendEscape() {
+    return sendKeyCode(53, 'Escape');
+  }
+
+  function sendEnter() {
+    return sendKeyCode(36, 'Enter');
+  }
+
+  function sendArrow(direction) {
+    const keyCodeByDirection = {
+      up: 126,
+      down: 125,
+      left: 123,
+      right: 124,
+    };
+    const normalized = (direction || '').toLowerCase();
+    const code = keyCodeByDirection[normalized];
+    if (code == null) {
+      return false;
+    }
+    return sendKeyCode(code, `${normalized} arrow`);
+  }
+
   return {
     sendEscape,
+    sendEnter,
+    sendArrow,
   };
 }
 

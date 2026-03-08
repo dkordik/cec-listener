@@ -118,7 +118,6 @@ function createCecMouseMapper(options = {}) {
     }
 
     switch ((keyName || '').toLowerCase()) {
-      case 'select':
       case 'enter':
         clickCurrent();
         break;
@@ -182,6 +181,7 @@ function createCecMouseMapper(options = {}) {
     handleKey,
     handleKeyPressed,
     handleKeyReleased,
+    clickCurrent,
   };
 }
 
